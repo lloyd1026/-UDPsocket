@@ -8,7 +8,7 @@ import java.util.Date;
 public class UDPClient {
     private static final int TIMEOUT = 100;                 // 100 ms 超时时间
     private static final int MAX_RETRIES = 3;               // 最大重传次数
-    private static final int TOTAL_PACKETS = 100;           // 发包总量
+    private static final int TOTAL_PACKETS = 12;           // 发包总量
     private static final byte VERSION = 0x2;                // 版本号
     private static final int serverPort = 12345;            // server port
     private static final String serverIp = "0.0.0.0";       // server IP
@@ -18,6 +18,10 @@ public class UDPClient {
     private static final short _clientToServer = 0x02;      // 客户端给服务器
     private static final short _synchronized = 0x03;        // 客户端的同步请求连接报文
     private static final short _ack = 0x04;                 // 服务器对客户端的ack
+    private static final short _fin = 0x05;                 // 第一次挥手
+    private static final short _finAck = 0x06;              // 第二次挥手：对第一次挥手的ack
+    private static final short _close = 0x07;               // 第三次挥手：准备关闭连接
+    private static final short _closeAck = 0x08;            // 第四次挥手：服务器会等一段时间关闭，由于这里需要同时处理多个客户端，所以不用关，客户端收到后就关闭
 
     public static void main(String[] args) {
 //        if(args.length != 2){
@@ -40,31 +44,11 @@ public class UDPClient {
             InetAddress serverAddress = InetAddress.getByName(serverIp);
 
             // 模拟TCP的连接过程
-            for(int attempt = 1; attempt <= MAX_RETRIES; attempt++){
-                short seqNo = 0;
-                byte[] SYN_packet = createPacket(seqNo, VERSION, _synchronized, "");
-                DatagramPacket sendPacket = new DatagramPacket(SYN_packet, SYN_packet.length, serverAddress, serverPort);
-                socket.send(sendPacket);
-                try{
-                    socket.setSoTimeout(TIMEOUT);                                   // 设置等待数据包的超时时间
-                    byte[] receiveData = new byte[1024];
-                    DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
-                    socket.receive(receivePacket);                                  // 阻塞方法，接收或者超时
-                    ByteBuffer wrapped = ByteBuffer.wrap(receivePacket.getData());
-                    wrapped.getShort();
-                    wrapped.get();
-                    short receivedType = wrapped.getShort();
-                    if(receivedType == _ack){
-                        System.out.println("received ACK from Server");                 // 收到服务器ack
-                    }
-                    // 如果收到其他的，没处理，也不可能
-                    break;
-                } catch (SocketTimeoutException e) {
-                    if (attempt == MAX_RETRIES) {
-                        System.out.println("connection fail [第一次握手]");
-                        return;
-                    }
-                }
+            if(exchangePackets((short)(0), socket, serverAddress, _synchronized, _ack)){
+                System.out.println("received Ack from Server");
+            } else{
+                System.out.println("connection fail [第一次握手]");
+                return;
             }
 
             // 开始发包
@@ -120,6 +104,19 @@ public class UDPClient {
                 }
             }
 
+            // 模拟四次挥手
+            if(exchangePackets((short)(TOTAL_PACKETS + 1), socket, serverAddress, _fin, _finAck)){
+                System.out.println("received finAck from Server");
+            } else{
+                System.out.println("connection fail [挥手]");
+            }
+
+            if(exchangePackets((short)(TOTAL_PACKETS + 2), socket, serverAddress, _close, _closeAck)){
+                System.out.println("received closeAck from Server");
+            } else{
+                System.out.println("connection fail [挥手]");
+            }
+
             // Print summary
             double lossRate = 1 - ((double) receivedPackets / TOTAL_PACKETS);
             long maxRTT = Arrays.stream(rtts).max().orElse(0);
@@ -147,7 +144,7 @@ public class UDPClient {
 
     private static byte[] createPacket(short seqNo, byte version, short messageType, String data) {
         // client -> server
-        // 报文格式 [Seq no(2B) | Ver(1B) | type(2B) | others...(200B)]
+        // 报文格式 [Seq no(2B) | Ver(1B) | type(2B) | others...]
         // ver 版本号固定为2
         // 头部字段
         ByteBuffer buffer = ByteBuffer.allocate(1024);
@@ -158,5 +155,31 @@ public class UDPClient {
         // content
         buffer.put(data.getBytes());
         return buffer.array();
+    }
+
+    private static  boolean exchangePackets (short seqNo, DatagramSocket socket, InetAddress serverAddress, short sendType, short receiveType) throws Exception{
+        for(int attempt = 1; attempt <= MAX_RETRIES; attempt++){
+            byte[] SYN_packet = createPacket(seqNo, VERSION, sendType, "");
+            DatagramPacket sendPacket = new DatagramPacket(SYN_packet, SYN_packet.length, serverAddress, serverPort);
+            socket.send(sendPacket);
+            try{
+                socket.setSoTimeout(TIMEOUT);                                   // 设置等待数据包的超时时间
+                byte[] receiveData = new byte[1024];
+                DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+                socket.receive(receivePacket);                                  // 阻塞方法，接收或者超时
+                ByteBuffer wrapped = ByteBuffer.wrap(receivePacket.getData());
+                wrapped.getShort();
+                wrapped.get();
+                short receivedType = wrapped.getShort();
+                if(receivedType == receiveType){
+                    break;
+                }
+            } catch (SocketTimeoutException e) {
+                if (attempt == MAX_RETRIES) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 }

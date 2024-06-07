@@ -12,6 +12,10 @@ public class UDPServer {
     private static final short _clientToServer = 0x02;      // 客户端给服务器
     private static final short _synchronized = 0x03;        // 客户端的同步请求连接报文
     private static final short _ack = 0x04;                 // 服务器对于客户端的syn的ack
+    private static final short _fin = 0x05;                 // 第一次挥手
+    private static final short _finAck = 0x06;              // 第二次挥手：对第一次挥手的ack
+    private static final short _close = 0x07;               // 第三次挥手：准备关闭连接
+    private static final short _closeAck = 0x08;            // 第四次挥手：服务器会等一段时间关闭，由于这里需要同时处理多个客户端，所以不用关，客户端收到后就关闭
 
     public static void main(String[] args) {
         DatagramSocket socket = null;
@@ -22,9 +26,8 @@ public class UDPServer {
 
             while (true) {
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length); // DatagramPacket对象，接收UDP数据报文，并存进指定好的字节数组，直接通过对象来访问数据
-                socket.receive(receivePacket);                          // 阻塞
+                socket.receive(receivePacket);                                                      // 阻塞
 
-                if (random.nextDouble() < PACKET_LOSS_RATE) continue;   // 人为丢包
 
                 // 对客户端封包进行解包
                 ByteBuffer wrapped = ByteBuffer.wrap(receivePacket.getData());
@@ -34,8 +37,14 @@ public class UDPServer {
                 short sendType = _serverToClient;
                 if(packageType == _synchronized){
                     sendType = _ack;
+                }else if(packageType == _fin){
+                    sendType = _finAck;
+                } else if(packageType == _close){
+                    sendType = _closeAck;
+                } else{
+                    // 普通报文模拟丢包
+                    if (random.nextDouble() < PACKET_LOSS_RATE) continue;   // 人为丢包
                 }
-
                 // 准备回包内容
                 String currentTime = new SimpleDateFormat("HH:mm:ss.SSS").format(new Date());
                 byte[] sendData = createResponsePacket(seqNo, version, sendType, currentTime);
@@ -57,7 +66,7 @@ public class UDPServer {
 
     private static byte[] createResponsePacket(short seqNo, byte version, short packageType, String serverTime) {
         // server -> client
-        // 报文格式 [Seq no(2B) | Ver(1B) | type(2B) | systemTime(12B) | others...(200B)]
+        // 报文格式 [Seq no(2B) | Ver(1B) | type(2B) | systemTime(12B) | others...]
         ByteBuffer buffer = ByteBuffer.allocate(1024);
         buffer.putShort(seqNo);
         buffer.put(version);
